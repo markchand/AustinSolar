@@ -1,0 +1,528 @@
+---
+title: "PVH"
+author: "Mark Hand"
+date: "12/5/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# This is an anonymized version of the Austin Energy solar panel installation database. For the de-anonymized data, see PVH_Anon.R. 
+# Packages used in this example: 
+library(tidyverse)
+theme_set(theme_minimal()) # Sets default visual theme for plots 
+library(plm) # For linear panel regression 
+library(pglm) # For logistic panel regression 
+library(gridExtra) # For multi-plot outputs 
+library(stargazer) # For multi-model regression outputs 
+library(foreign) # For scatterplots. Probably not necessary
+library(scales) # For rearranging axes 
+library(lubridate) # For dealing with dates, maybe
+# If you get an error, you may not have the packages installed.  Try running: install.packages("packagename") and/or update.packages().
+
+# Setting working directory and importing data: 
+setwd("~/Box Sync/ASES/ASES_data/PVH")
+AE <- read_csv("~/Box Sync/ASES/ASES_data/PVH/Anonymized.csv")
+
+# Some knitr stuff I don't understand  
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r variables, include=F}
+# Creating variables: 
+# Days_to_install - How long it takes to install something 
+AE$Days_to_install <- as.numeric(as.Date(as.character(AE$`Final Inspection Date`))-as.Date(as.character(AE$`App Received Date`)))
+# Normalize that by size of install 
+AE$inefficiency <- AE$Days_to_install/AE$`kW AC`
+# hist(AE$Days_to_install[AE$Days_to_install>0&AE$Days_to_install<365])
+### NB: Need to fix this. Ask somebody. Also, 
+# perwatt - Cost per watt of the system 
+AE$perwatt <- as.numeric(AE$`Total Payment`/(AE$`kW AC`*1000))
+AE <- AE %>% 
+  group_by(year) %>% 
+  mutate(pwsby=((perwatt-mean(perwatt))/sd(perwatt)))
+# hist(AE$perwatt[AE$perwatt>0&AE$perwatt<10])
+# Offness of estimate (%)
+AE$offness <- as.numeric(((AE$`Total Payment`-AE$`LOI Amount`)/AE$`LOI Amount`)*100)
+# Start year 
+AE$year <- as.Date(cut(AE$`App Received Date`,breaks = "year"))
+AE$year <- lubridate::year(AE$year)
+AE <- AE %>% 
+  filter(year>2001 & 
+           year<2015 &
+           Days_to_install<351 &
+           Days_to_install>0 &
+           offness<300 &
+           perwatt>0 &
+           perwatt<10 &
+           `kW AC` >0) %>% 
+  group_by(year) %>% 
+  mutate(avg_cost_per_watt_per_year = mean(perwatt))
+
+# Getting rid of Inf values 
+is.na(AE) <- do.call(cbind,lapply(AE, is.infinite))
+
+## Creating variables, V2 
+
+# Getting rid of Inf values 
+is.na(AE) <- do.call(cbind,lapply(AE, is.infinite))
+
+# Days to Install 
+AE$Days_to_install <- as.numeric(as.Date(as.character(AE$`Final Inspection Date`))-as.Date(as.character(AE$`App Received Date`)))
+    
+AE %>% 
+  mutate(
+    year = year(`App Received Date`),
+    inefficiency = Days_to_install/AE$`kW AC`,
+    perwatt = as.numeric(`Total Payment`/(`kW AC`*1000)),
+    offness = as.numeric(((AE$`Total Payment`-AE$`LOI Amount`)/AE$`LOI Amount`)*100)
+    ) %>% 
+  filter(
+    year>2001 & 
+    year<2015 &
+    Days_to_install<351 &
+    Days_to_install>0 &
+    offness<200 &
+    perwatt>0 &
+    perwatt<10 &
+    `kW AC` >0) %>% 
+    group_by(year) %>% 
+  mutate(
+    pwsby=((perwatt-mean(perwatt))/sd(perwatt)),
+    industry_installs = n(),
+    industry_revenue = sum(`Total Payment`)
+    ) %>% 
+  group_by(Alias, year) %>% 
+    mutate(
+    revenue = sum(`Total Payment`),
+    market_share = revenue/industry_revenue,
+    number_of_installs = n(),
+    revenue = sum(`Total Payment`),
+    avg_days_to_install = mean(Days_to_install, na.rm=T),
+    sd_days_to_install = sd(Days_to_install, na.rm=T),
+    cv_days_to_install = sd_days_to_install/avg_days_to_install,
+    avg_inefficiency = mean(inefficiency, na.rm=T),
+    sd_inefficiency = sd(inefficiency, na.rm=T),
+    cv_inefficiency = sd_inefficiency/avg_inefficiency,
+    avg_kW = mean(`kW AC`, na.rm=T),
+    avg_perwatt = mean(perwatt, na.rm=T),
+    sd_perwatt = sd(perwatt, na.rm=T),
+    cv_perwatt = sd_perwatt/avg_perwatt,
+    avg_pwsby = mean(pwsby, na.rm=T),
+    sd_pwsby = sd(pwsby, na.rm=T),
+    cv_pwsby = sd_pwsby/avg_pwsby,
+    avg_offness = mean(offness, na.rm=T),
+    sd_offness = sd(offness, na.rm=T),
+    cv_offness = sd_offness/avg_offness
+    ) -> AEbig
+
+AEbig %>% 
+  filter(Alias=="Graphic Solar" & year=="2014") -> AEtest
+
+AEbig %>% 
+  select(Alias, year, revenue, market_share,avg_inefficiency,avg_pwsby,avg_offness,cv_inefficiency, cv_pwsby, cv_offness) -> AEsmall 
+
+# Filtering out NAs (not run yet) 
+panel2 <- panel %>% 
+  filter(!is.na(Alias)) %>% 
+  filter(!is.na(year)) %>% 
+  mutate(avg_perwatt=replace(avg_perwatt, which(avg_perwatt=="Inf"), NA)) %>% 
+  mutate(avg_days_to_install=replace(avg_days_to_install, which(avg_days_to_install=="NaN"), NA)) %>% 
+  mutate(avg_days_to_install=replace(avg_days_to_install, which(revenue==0), 0))
+
+
+```
+
+```{r panels, include=F}
+## Revenue panel(s)
+panel <- AE %>% 
+  group_by(Alias, year) %>% 
+  summarise(
+    number_of_installs = n(),
+    revenue = sum(`Total Payment`),    
+    avg_days_to_install = mean(Days_to_install, na.rm=T),
+    sd_days_to_install = sd(Days_to_install, na.rm=T),
+    avg_inefficiency = mean(inefficiency, na.rm=T),
+    sd_inefficiency = sd(inefficiency, na.rm=T),
+    avg_kW = mean(`kW AC`, na.rm=T),
+    avg_perwatt = mean(perwatt, na.rm=T),
+    sd_perwatt = sd(perwatt, na.rm=T),
+    avg_pwsby = mean(pwsby, na.rm=T),
+    sd_pwsby = sd(pwsby, na.rm=T),
+    avg_offness = mean(offness, na.rm=T),
+    sd_offness = sd(offness, na.rm=T)
+    ) 
+
+# Filtering out NAs
+panel2 <- panel %>% 
+  filter(!is.na(Alias)) %>% 
+  filter(!is.na(year)) %>% 
+  mutate(avg_perwatt=replace(avg_perwatt, which(avg_perwatt=="Inf"), NA)) %>% 
+  mutate(avg_days_to_install=replace(avg_days_to_install, which(avg_days_to_install=="NaN"), NA)) %>% 
+  mutate(avg_days_to_install=replace(avg_days_to_install, which(revenue==0), 0))
+
+# Survival panels (incomplete)
+# AE %>% 
+#   group_by(Alias, year) %>% 
+#   summarise(
+#     number_of_installs = n())
+
+# https://stats.stackexchange.com/questions/2134/r-package-for-fixed-effect-logistic-regression#2136
+# https://www3.nd.edu/~rwilliam/stats3/Panel03-FixedEffects.pdf
+# https://cran.r-project.org/web/packages/lme4/index.html
+# https://cran.r-project.org/web/packages/pglm/pglm.pdf
+
+## Market share + 
+industry <- panel2 %>% 
+  group_by(year) %>% 
+  summarise(
+    industry_installs = sum(number_of_installs),
+    industry_revenue = sum(revenue)
+    )
+
+panel3 <- left_join(panel2, industry, by = "year")
+
+panel3 <- panel3 %>% 
+  mutate(
+    market_share = (revenue / industry_revenue)
+  )
+```
+
+```{r revenue models, include=F}
+RevModel1 <- plm(revenue ~ 
+                     avg_days_to_install + 
+                     avg_perwatt + 
+                     avg_offness + 
+                     sd_days_to_install + 
+                     sd_perwatt + 
+                     sd_offness, 
+                   data = panel2)
+
+RevModel2 <- plm(revenue ~ 
+                     lag(avg_days_to_install) + 
+                     lag(avg_perwatt) + 
+                     lag(avg_offness) + 
+                     lag(sd_days_to_install) + 
+                     lag(sd_perwatt) + 
+                     lag(sd_offness), 
+                   data = panel2)
+
+RevModel3 <- plm(revenue ~ 
+                     lag(avg_days_to_install) + 
+                     lag(avg_perwatt) + 
+                     lag(avg_offness),
+                   data = panel2) 
+
+RevModel4 <- plm(revenue ~ 
+                     lag(poly(avg_days_to_install, 2)) + 
+                     lag(poly(avg_perwatt, 2)) + 
+                     lag(poly(avg_offness, 2)),
+                   data = panel2)
+
+RevModel5 <- plm(revenue ~ 
+                   lag(poly(avg_days_to_install,2)) + 
+                   lag(avg_perwatt),
+                 data = panel2) 
+
+# Including new variables in revenue models 
+  # Inefficiency instead of time to install 
+  # Per watt cost standardized within each year 
+
+# All in 
+summary(plm(revenue ~ 
+              lag(avg_days_to_install) + 
+              lag(avg_inefficiency) +
+              lag(avg_perwatt) + 
+              lag(avg_pwsby) +
+              lag(avg_offness) + 
+              lag(sd_days_to_install) + 
+              lag(sd_inefficiency) +
+              lag(sd_perwatt) + 
+              lag(sd_pwsby) +
+              lag(sd_offness), 
+              data = panel2, model="within"))
+# sd_perwatt * 
+
+# Replacing old variables
+RevModel8 <- plm(revenue ~ 
+              lag(avg_inefficiency) +
+              lag(avg_pwsby) +
+              lag(avg_offness) + 
+              lag(sd_inefficiency) +
+              lag(sd_pwsby) +
+              lag(sd_offness), 
+              data = panel2, model="within")
+summary(RevModel8)
+# No *s 
+
+# New variables, plus poly
+RevModel9 <- plm(revenue ~ 
+              lag(poly(avg_inefficiency,2)) +
+              lag(poly(avg_pwsby, 2)) +
+              lag(poly(avg_offness,2)) + 
+              lag(sd_inefficiency) +
+              lag(sd_pwsby) +
+              lag(sd_offness), 
+              data = panel2, model="within")
+# No *s
+
+# Big old model
+stargazer(RevModel2, RevModel8, RevModel9, type="text",
+          covariate.labels=c(
+            "Mean time to completion",
+            "Mean per watt cost",
+            "Mean cost estimate error",
+            "Variation in time to completion",
+            "Variation in per watt cost",
+            "Variation in cost estimate error",
+            "Mean time to completion", 
+            "Mean time to completion (squared)", 
+            "Mean per watt cost",
+            "Mean per watt cost (squared)",  
+            "Mean estimate error",  
+            "Mean cost estimate error(squared)"
+            ), 
+            order=c(1,2,3,10,11,12)
+          out="revmodels.htm"
+          )
+
+```
+
+```{r market share models, include=F}
+summary(plm(revenue ~
+              lag(market_share),
+            data=panel3))
+
+ShareModel1 <- plm(market_share ~ 
+                   avg_days_to_install + 
+                   avg_perwatt + 
+                   avg_offness + 
+                   sd_days_to_install + 
+                   sd_perwatt + 
+                   sd_offness, 
+                 data = panel3)
+
+ShareModel2 <- plm(market_share ~ 
+                   lag(avg_days_to_install) + 
+                   lag(avg_perwatt) + 
+                   lag(avg_offness) + 
+                   lag(sd_days_to_install) + 
+                   lag(sd_perwatt) + 
+                   lag(sd_offness), 
+                 data = panel3)
+
+ShareModel3 <- plm(market_share ~ 
+                   lag(avg_perwatt) + 
+                   lag(sd_offness), 
+                 data = panel3)
+
+ShareModel4 <- plm(market_share ~ 
+                   lag(poly(avg_days_to_install, 2)) + 
+                   lag(poly(avg_perwatt, 2)) + 
+                   lag(poly(avg_offness, 2)) +
+                   lag(sd_offness), 
+                 data = panel3)
+
+ShareModel5 <- plm(market_share ~ 
+                   lag(poly(avg_days_to_install, 2)) + 
+                   lag(avg_perwatt) + 
+                   lag(poly(avg_offness, 2)), 
+                 data = panel3)
+
+ShareModel6 <- plm(market_share ~ 
+                   lag(poly(avg_days_to_install, 2)) + 
+                   lag(avg_perwatt), 
+                 data = panel3)
+
+ShareModel7 <- plm(market_share ~ 
+                   lag(poly(avg_days_to_install, 2)) + 
+                   lag(avg_perwatt) +
+                   lag(sd_offness),
+                 data = panel3)
+
+# New variables
+ShareModel8 <- plm(market_share ~ 
+                   lag(avg_inefficiency) + 
+                   lag(avg_pwsby) + 
+                   lag(avg_offness) + 
+                   lag(sd_inefficiency) + 
+                   lag(sd_pwsby) + 
+                   lag(sd_offness), 
+                 data = panel3)
+summary(ShareModel8) # No stars
+
+ShareModel9 <- plm(market_share ~ 
+              lag(poly(avg_inefficiency,2)) +
+              lag(poly(avg_pwsby, 2)) +
+              lag(poly(avg_offness,2)) + 
+              lag(sd_inefficiency) +
+              lag(sd_pwsby) +
+              lag(sd_offness), 
+              data = panel3)
+summary(ShareModel9) # No *s
+
+stargazer(ShareModel2, ShareModel8, ShareModel9,
+          covariate.labels=c(
+            "Mean time to completion",
+            "Mean per watt cost",
+            "Mean cost estimate error",
+            "Mean time to completion (per watt)", 
+            "Mean per watt cost", 
+            "Variation in time to completion",
+            "Variation in per watt cost",
+            "Variation in cost estimate error",
+            "Variation in average time to completion (per watt)",
+            "Variation in standardized per watt cost",
+            "Average time to completion (per watt)", 
+            "Average time to completion (per watt, squared)", 
+            "Avg standardized per watt cost",
+            "Avg standardized per watt cost (squared)",  
+            "Avg cost estimate error",  
+            "Avg cost estimate error(squared)"
+            ), 
+            order=c(1,2,5,3,4,6,7,16,14,15,8,9,10,11,12,13),
+          out="sharemodels.htm"
+          )
+```
+
+```{r survival models, include=F}
+## Other potential packages 
+# https://cran.r-project.org/web/packages/survival/index.html
+# https://cran.r-project.org/web/packages/survey/index.html
+# https://cran.r-project.org/web/packages/lme4/index.html
+# https://cran.r-project.org/web/packages/plm/index.html
+# Making survival dataset 
+grid <- expand.grid(year=2004:2014, Alias=unique(panel3$Alias))
+panel4 <- full_join(panel3,grid) %>% 
+  arrange(Alias, year) %>% 
+  mutate(
+    exists=ifelse(is.na(revenue),"No","Yes")
+  )
+# Creates a bunch of zeros, which allows pglm to run but (might) muck up the rest: 
+# panel4[is.na(panel4)] <- 0
+
+# SurvivalModel1 <- pglm(exists ~ 
+#                          avg_days_to_install + 
+#                          avg_perwatt + 
+#                          avg_offness + 
+#                          sd_days_to_install + 
+#                          sd_perwatt + 
+#                          sd_offness, 
+#     data = panel4, family=binomial('probit'))
+# summary(SurvivalModel1)
+# 
+# SurvivalModel2 <- pglm(exists ~ 
+#                          poly(avg_days_to_install, 2) + 
+#                          poly(avg_perwatt, 2) + 
+#                          poly(avg_offness, 2) + 
+#                          sd_days_to_install + 
+#                          sd_perwatt + 
+#                          sd_offness, 
+#                        data = panel4, family=binomial('probit'))
+# summary(SurvivalModel2)
+
+# SurvivalModel3 <- pglm(exists~
+#                          lag(avg_days_to_install),
+#                          data=panel4, family=binomial('probit'))
+
+# stargazer(SurvivalModel1, SurvivalModel2, type="text", out="survivalmodels.htm")
+# stargazer doesn't work with pglm, FML. 
+```
+
+```{r summary statistics and plots, include=F}
+# 1 Market share over time 
+sharextime <- ggplot(panel3, aes(year,market_share, fill=Alias)) + geom_bar(stat="identity", show.legend=F) + labs(title="Market share by firm over time", x="Year", y="Market share") + scale_x_continuous(breaks= pretty_breaks()) + scale_fill_hue(l=45)
+
+# 2 Revenue over time 
+revenuextime <- ggplot(panel3, aes(year,revenue, fill=Alias)) + geom_bar(stat="identity", show.legend=F) + labs(title="Revenue by firm over time", x="Year", y="Revenue") + scale_x_continuous(breaks= pretty_breaks()) + scale_fill_hue(l=45)
+
+# 4 Lifecycles
+panel4 %>% 
+  group_by(Alias) %>% 
+  summarise(yearsactive = n_distinct(year[exists=="Yes"])) %>% 
+  select(Alias,yearsactive) -> yearsxfirm
+
+lifecycles <- ggplot(yearsxfirm, aes(yearsactive)) + geom_histogram(binwidth = 1, fill="#00A4E0") + labs(title="How long do firms survive?", x="Year", y="Number of firms")
+
+# 3 Number of firms active in a given year
+panel4 %>% 
+  group_by(year) %>% 
+  summarise(firms = n_distinct(Alias[exists=="Yes"])) %>% 
+  select(year,firms) -> firmsxyear
+
+firmsxyearplot <- ggplot(firmsxyear, aes(year, firms)) + geom_line(stat="identity", color="#00A4E0") + labs(title="How many firms are in the solar industry?", x="Year", y="Number of firms")
+# + labs(list(title='Number of active firms per year', x='', y='Number of  firms'))
+
+grid.arrange(revenuextime, sharextime, firmsxyearplot, lifecycles, nrow=2)
+
+# Distribution of variables 
+#1
+revenue_histogram <- ggplot(panel, aes(revenue)) + geom_histogram(fill="#00A4E0") + labs(title="Revenue per firm per year", x="Revenue", y="# of firm-years")
+
+#2
+market_share_histogram <- ggplot(panel3, aes(market_share)) + geom_histogram(fill="#00A4E0")+ labs(title="Market share per firm per year", x="Revenue", y="")
+
+#3
+avg_inefficiency_histogram <- ggplot(panel, aes(avg_inefficiency)) + geom_histogram() + labs(title="Average time to completion per watt", x="Days per watt", y="# of firm-years")
+
+#4
+sd_inefficiency_histogram <- ggplot(panel, aes(sd_inefficiency)) + geom_histogram() + labs(title="Variation in time to completion per watt", x="Standard deviations", y="")
+
+#5
+avg_pwsby_histogram <- ggplot(panel, aes(avg_perwatt)) + geom_histogram() + labs(title="Average standardized per watt cost", x="", y="# of firm-years")
+
+#6
+sd_pwsby_histogram <- ggplot(panel, aes(sd_perwatt)) + geom_histogram() + labs(title="Variation in standardized per watt cost of install", x="Standard deviation", y="")
+
+#7
+avg_offness_histogram <- ggplot(panel, aes(avg_offness)) + geom_histogram() + labs(title="Average cost estimate error", x="Percent off", y="# of firm-years")
+
+#8
+sd_offness_histogram <- ggplot(panel, aes(sd_offness)) + geom_histogram() + labs(title="Variation in cost estimate error", x="Standard deviation", y="")
+
+grid.arrange(revenue_histogram, market_share_histogram, avg_inefficiency_histogram, sd_inefficiency_histogram, avg_pwsby_histogram, sd_pwsby_histogram, avg_offness_histogram, sd_offness_histogram, nrow=4)
+
+ggplot(panel, aes(number_of_installs)) + geom_histogram() 
+ggplot(panel, aes(avg_kW)) + geom_histogram() 
+# </distribution of variables> 
+
+# Revenue over time 
+ggplot(panel4) + geom_smooth(aes(year,revenue, color=Alias), show.legend=F, stat="identity")
+
+# Installs over time 
+ggplot(panel4) + geom_smooth(aes(year,number_of_installs, color=Alias), show.legend=F, se=F, stat="identity")
+
+ggplot(panel4, aes(y=Alias, x=year, fill=revenue)) + 
+  geom_tile()
+
+```
+
+```{r sandbox, include=F}
+
+# Fixed effects, maybe? 
+summary(plm(revenue ~ 
+                     lag(avg_days_to_install) + 
+                     lag(avg_perwatt) + 
+                     lag(avg_offness) + 
+                     lag(sd_days_to_install) + 
+                     lag(sd_perwatt) + 
+                     lag(sd_offness), 
+                   data = panel2, model="within"))
+# Same results 
+
+ggplot() + geom_histogram(data=panel2, aes(avg_inefficiency))
+ggplot(data=panel2, aes(year,avg_inefficiency)) + geom_point() + geom_smooth()
+
+# Descriptives, maybe? 
+ggplot(data=panel2, aes(avg_pwsby,revenue)) + geom_point() + geom_smooth() + xlim(-1,1)
+
+ggplot(data=panel2, aes(avg_inefficiency,revenue)) + geom_point() + geom_smooth()
+
+ggplot(data=panel2, aes(avg_offness,revenue)) + geom_point() + geom_smooth() + xlim(-10,10)
+
+# Updating with Paul's new feedback: Job size as a covariate and coefficient of variation instead of SD. 
+
+# Include job size as a covariate 
+# Replacing the SD with the coefficient of variation (CV=SD/mean)
+
+```
+
